@@ -1,0 +1,933 @@
+
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Life RPG — MJ + Investissement (Texte noir + Reset)</title>
+
+<!-- PWA / iOS -->
+  <link rel="manifest" href="manifest.json">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Life RPG">
+  <link rel="apple-touch-icon" href="icon-192.png">
+
+<!-- Tailwind + React -->
+<script src="https://cdn.tailwindcss.com"></script>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<!-- Police -->
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+
+<!-- iPhone “app-like” (optionnel) -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+
+<style>
+  :root{
+    --glass-bg: rgba(255,255,255,.78);
+    --glass-brd: rgba(255,255,255,.6);
+    --accent-1: #7c3aed; /* violet */
+    --accent-2: #06b6d4; /* cyan */
+    color-scheme: light;
+  }
+  html,body{height:100%}
+  /* Texte noir par défaut */
+  body{
+    font-family:"Plus Jakarta Sans", ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial;
+    color:#0f172a; /* slate-900 */
+  }
+  /* Forcer toutes les utilitaires Tailwind 'text-white*' à NOIR */
+  [class*="text-white"]{ color:#0f172a !important; }
+
+  /* Fond Aurora animé */
+  .aurora{position:fixed; inset:0; z-index:-20; background:#0b1220; overflow:hidden}
+  .aurora::before,.aurora::after{
+    content:""; position:absolute; inset:-20%;
+    background: radial-gradient(60% 40% at 20% 20%, rgba(124,58,237,.30), transparent 60%),
+                radial-gradient(40% 50% at 80% 30%, rgba(6,182,212,.28), transparent 60%),
+                radial-gradient(50% 35% at 50% 80%, rgba(236,72,153,.22), transparent 60%);
+    filter: blur(60px); animation:drift 22s ease-in-out infinite alternate;
+    transform: translateZ(0);
+  }
+  .aurora::after{
+    animation-duration: 28s; mix-blend-mode: screen; opacity:.9;
+    background: radial-gradient(45% 40% at 30% 60%, rgba(59,130,246,.25), transparent 60%),
+                radial-gradient(35% 45% at 70% 70%, rgba(16,185,129,.22), transparent 60%);
+  }
+  @keyframes drift{
+    0% { transform: translate3d(-2%, -1%, 0) scale(1.05) rotate(0.5deg); }
+    100%{ transform: translate3d(2%, 1%, 0) scale(1.06) rotate(-0.5deg); }
+  }
+
+  /* Cartes glass + foil shimmer */
+  @keyframes shimmer{0%{transform:translateX(-150%) rotate(8deg)}100%{transform:translateX(150%) rotate(8deg)}}
+  .foil::after{
+    content:""; position:absolute; inset:0; pointer-events:none;
+    background:linear-gradient(120deg, rgba(255,255,255,0) 20%, rgba(255,255,255,.35) 40%, rgba(255,255,255,0) 60%);
+    mix-blend-mode:screen; transform:translateX(-150%) rotate(8deg); animation:shimmer 3.2s linear infinite;
+  }
+  .glass{background:var(--glass-bg); border:1px solid var(--glass-brd); backdrop-filter: blur(10px)}
+  .btn-grad{background:linear-gradient(90deg, var(--accent-1), var(--accent-2)); color:#fff}
+  .btn-grad:hover{filter:brightness(1.03)}
+
+  /* Champs en NOIR dans les panneaux glass */
+  .glass input,
+  .glass select,
+  .glass textarea { color:#0f172a; caret-color:#0f172a; }
+  .glass ::placeholder { color: rgba(15,23,42,.55); } /* slate-900 à ~55% */
+</style>
+</head>
+<body class="min-h-screen">
+<div class="aurora"></div>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react,env">
+const {useState,useEffect,useMemo,useRef} = React;
+
+/*** CONFIG ***/
+const CATEGORIES=[
+  {id:"sport",label:"Sport",icon:"🏅"},
+  {id:"work",label:"Work",icon:"💼"},
+  {id:"reflexion",label:"Réflexion",icon:"🧠"},
+  {id:"sante",label:"Santé",icon:"🩺"},
+  {id:"social",label:"Social",icon:"🤝"},
+  {id:"finances",label:"Finances",icon:"💶"},
+  {id:"invest",label:"Investissement",icon:"📈"},
+];
+const XP_PER_DIFFICULTY={1:10,2:20,3:30};
+const STORAGE_KEY="lifeRpgV3_xp_cards_modern_backup_v1";
+const CARD_UNLOCK_XP_STEP=100;
+
+/*** UTIL ***/
+const clamp=(x,a,b)=>Math.max(a,Math.min(b,x));
+const round5=x=>Math.round(x/5)*5;
+const round10=x=>Math.round(x/10)*10;
+const round50=x=>Math.round(x/50)*50;
+const fmtEuro=n=>new Intl.NumberFormat('fr-FR',{style:'currency',currency:'EUR',maximumFractionDigits:0}).format(n);
+const days=n=>n*24*3600*1000;
+
+/*** DECK 70 ***/
+const CARDS_MASTER_DEFAULT=(()=>{
+  const catLabel=id=>CATEGORIES.find(c=>c.id===id)?.label||id;
+  const make=(catId)=>{
+    const L=catLabel(catId), arr=[];
+    const rares=catId==="sport"?["Le Gladiateur",`${L} — Adepte I`,`${L} — Adepte II`]:[`${L} — Adepte I`,`${L} — Adepte II`,`${L} — Adepte III`];
+    for(let i=1;i<=4;i++)arr.push({title:`${L} — Novice ${i}`,rarity:"Common",image:null,category:catId});
+    for(let i=0;i<3;i++)arr.push({title:rares[i],rarity:"Rare",image:null,category:catId});
+    for(let i=1;i<=2;i++)arr.push({title:`${L} — Maître ${i}`,rarity:"Epic",image:null,category:catId});
+    arr.push({title:`${L} — Légende`,rarity:"Legendary",image:null,category:catId});
+    return arr;
+  };
+  const per=Object.fromEntries(CATEGORIES.map(c=>[c.id,make(c.id)]));
+  const sport=per.sport; const gi=sport.findIndex(x=>x.title==="Le Gladiateur"); const g=sport.splice(gi,1)[0];
+  const out=[g];
+  for(let r=0;r<10;r++) for(const c of CATEGORIES){ const it=per[c.id][r]; if(it) out.push(it); }
+  return out.slice(0,70);
+})();
+
+/*** PERSIST ***/
+const loadState=()=>{try{const raw=localStorage.getItem(STORAGE_KEY);return raw?JSON.parse(raw):null;}catch{return null}};
+const saveState=(s)=>{try{localStorage.setItem(STORAGE_KEY,JSON.stringify(s));}catch{}};
+
+/*** RARETÉ STYLES ***/
+const rarityPill=r=>({Common:"bg-slate-200 text-slate-800",Rare:"bg-sky-200 text-sky-900",Epic:"bg-violet-200 text-violet-900",Legendary:"bg-amber-200 text-amber-900"}[r]||"bg-slate-200");
+const rarityFrame=r=>({Common:"from-slate-300 via-slate-200 to-slate-300",Rare:"from-sky-400 via-cyan-300 to-sky-500",Epic:"from-violet-500 via-fuchsia-400 to-violet-600",Legendary:"from-amber-400 via-rose-400 to-amber-500"}[r]||"from-slate-300 via-slate-200 to-slate-300");
+const rarityInner=r=>({Common:"bg-white/88",Rare:"bg-white/90",Epic:"bg-white/92",Legendary:"bg-white/94"}[r]||"bg-white/90");
+
+/*** COMPRESSION IMAGE ***/
+const processImageFile=(file,maxW=720,maxH=1024,quality=0.85)=>new Promise((resolve,reject)=>{
+  const reader=new FileReader();
+  reader.onload=()=>{const img=new Image();img.onload=()=>{
+    let w=img.width,h=img.height;const ratio=Math.min(maxW/w,maxH/h,1);w=Math.round(w*ratio);h=Math.round(h*ratio);
+    const canvas=document.createElement('canvas');canvas.width=w;canvas.height=h;const ctx=canvas.getContext('2d');ctx.drawImage(img,0,0,w,h);
+    try{resolve(canvas.toDataURL('image/jpeg',quality));}catch(e){reject(e);}
+  };img.onerror=reject;img.src=reader.result;};reader.onerror=reject;reader.readAsDataURL(file);
+});
+
+/*** MJ — étapes ***/
+const BASE_STAGES={
+  sport:[
+    {k:"cardio", base:{min:10}, dur:days(1)},
+    {k:"cardio", base:{min:20}, dur:days(2)},
+    {k:"force",  base:{rounds:3,reps:15,core:30}, bonus:{t:"Semaine active (3 jours bougés)",diff:2}, dur:days(3)},
+    {k:"mix",    base:{min:45}, dur:days(3)},
+    {k:"session",base:{min:60, alt:{runKm:5, bikeKm:10}}, bonus:{t:"Test perf (PR/compét/10k pas 7j)",diff:3}, dur:days(5)},
+    {k:"weekly_sessions", base:{sessions:5}, diff:3, xp:60, dur:days(7)},
+    {k:"pb_or_volume", base:{pb5k:true, pushups:100}, diff:3, xp:80, dur:days(7)},
+    {k:"steps_streak", base:{days:14, steps:10000}, diff:3, xp:120, dur:days(14)},
+    {k:"distance_day", base:{runKm:10, hikeKm:20}, diff:3, xp:120, dur:days(10)},
+    {k:"hero_month", base:{sessions:20, days:30}, diff:3, xp:200, bonus:{t:"Plan d’entraînement écrit (4 semaines)",diff:3}, dur:days(30)},
+  ],
+  work:[
+    {k:"deep", base:{min:15}},
+    {k:"pomodoro", base:{blocks:1, min:25}},
+    {k:"double_pomo", base:{blocks:2, recap:5}, bonus:{t:"Inbox ≤10 & 3 tâches clés prêtes",diff:2}},
+    {k:"deep", base:{min:90}, diff:2},
+    {k:"delivery", base:{type:"notable"}, diff:3, bonus:{t:"Demo/partage public",diff:3}},
+    {k:"deep_week", base:{days:5, minPerDay:120}, diff:3, xp:60, dur:days(7)},
+    {k:"publish", base:{kind:"article/video/projet"}, diff:3, xp:80, dur:days(7)},
+    {k:"daily_output", base:{days:10}, diff:3, xp:120, dur:days(10)},
+    {k:"pitch", base:{people:3}, diff:3, xp:120, dur:days(7)},
+    {k:"mvp_or_doc", base:{mvp:true, pages:5}, diff:3, xp:200, bonus:{t:"Check-list maintenance hebdo",diff:3}, dur:days(21)},
+  ],
+  reflexion:[
+    {k:"read", base:{min:10, notes:3}},
+    {k:"read", base:{min:20, sheet:true}},
+    {k:"read", base:{min:30, summarize:"chapitre"}, diff:2, bonus:{t:"Partager une note",diff:2}},
+    {k:"study", base:{min:60, synth:200}, diff:2},
+    {k:"finish_book", base:{mindmap:true}, diff:3, bonus:{t:"Appliquer 1 idée concrète",diff:3}},
+    {k:"daily_study", base:{days:7, min:60}, diff:3, xp:60, dur:days(7)},
+    {k:"essay", base:{words:[800,1200]}, diff:3, xp:80, dur:days(7)},
+    {k:"publish_summary", base:{book:true}, diff:3, xp:120, dur:days(10)},
+    {k:"teach", base:{min:30}, diff:3, xp:120, dur:days(7)},
+    {k:"thirty_day_cycle", base:{days:30, min:30, publish:10}, diff:3, xp:200, bonus:{t:"Index perso (SRS/notes)",diff:3}, dur:days(30)},
+  ],
+  sante:[
+    {k:"water_mob", base:{L:1, mobMin:5}},
+    {k:"screen_off", base:{beforeSleepMin:30}},
+    {k:"steps", base:{steps:8000}, diff:2, bonus:{t:"Semaine sans soda/alcool",diff:2}},
+    {k:"plate_stretch", base:{plate:"50/25/25", stretch:10}, diff:2},
+    {k:"morning_routine", base:{days:5}, diff:3, bonus:{t:"Check-up perso (poids/mensurations/photo)",diff:3}},
+    {k:"sleep_week", base:{nights:7, hours:7}, diff:3, xp:60, dur:days(7)},
+    {k:"hydr_mob_series", base:{days:14, L:2, mobMin:10}, diff:3, xp:80, dur:days(14)},
+    {k:"home_meals", base:{weekMeals:5}, diff:3, xp:120, dur:days(7)},
+    {k:"fitness_test", base:{plankMin:3, run5k:true}, diff:3, xp:120, dur:days(10)},
+    {k:"three_pillars_month", base:{days:20}, diff:3, xp:200, bonus:{t:"Routine mensuelle notée",diff:3}, dur:days(30)},
+  ],
+  social:[
+    {k:"msg", base:{count:1}},
+    {k:"call", base:{min:10}},
+    {k:"invite", base:{kind:"café/sport/visio"}, diff:2, bonus:{t:"Merci sincère",diff:2}},
+    {k:"event_join", base:{one:true}, diff:2},
+    {k:"host_two", base:{count:2}, diff:3, bonus:{t:"Aider 1 personne concrètement",diff:3}},
+    {k:"daily_touch", base:{days:7}, diff:3, xp:60, dur:days(7)},
+    {k:"cowork_host", base:{people:4}, diff:3, xp:80, dur:days(10)},
+    {k:"three_events", base:{events:3, spanDays:14}, diff:3, xp:120, dur:days(14)},
+    {k:"volunteer", base:{hours:2}, diff:3, xp:120, dur:days(10)},
+    {k:"host_event", base:{people:6}, diff:3, xp:200, bonus:{t:"Carnet relationnel (10 contacts + notes)",diff:3}, dur:days(21)},
+  ],
+  finances:[
+    {k:"save", base:{eur:20}},
+    {k:"save", base:{eur:30}},
+    {k:"no_spend_week", base:{scope:"livraison/resto"}, diff:2, bonus:{t:"Bilan hebdo (revenus/dépenses/solde)",diff:2}, dur:days(7)},
+    {k:"save", base:{eur:50}, diff:2},
+    {k:"save", base:{eur:100}, diff:3, bonus:{t:"Optimiser: annuler 1 abo / renégocier 1 frais",diff:3}},
+    {k:"save", base:{eur:200}, diff:3, xp:60},
+    {k:"budget_plan", base:{days:30, adherence:80}, diff:3, xp:80, bonus:{t:"Lister 10 dépenses à réduire",diff:3}, dur:days(30)},
+    {k:"save", base:{eur:500}, diff:3, xp:120},
+    {k:"side_income", base:{eur:100}, diff:3, xp:120, dur:days(21)},
+    {k:"save_month", base:{eur:1000, days:30}, diff:3, xp:200, bonus:{t:"Automatiser virements & fonds d’urgence",diff:3}, dur:days(30)},
+  ],
+  invest:[
+    {k:"learn_inv", base:{min:20, topics:"DCA & risque"}, dur:days(1)},
+    {k:"watchlist", base:{assets:5}, dur:days(2)},
+    {k:"dca", base:{eur:50}, diff:2, bonus:{t:"Règles de risque : 1–2% max par trade (écrit)",diff:2}, dur:days(5)},
+    {k:"paper", base:{trades:3}, diff:2, dur:days(5)},
+    {k:"journal_week", base:{days:7}, diff:3, bonus:{t:"Template journal (thèse/invalidation/sortie)",diff:3}, dur:days(7)},
+    {k:"report", base:{docs:1}, diff:3, xp:60, dur:days(7)},
+    {k:"backtest", base:{years:3}, diff:3, xp:80, dur:days(10)},
+    {k:"rebalance", base:{allocPairs:2}, diff:3, xp:120, dur:days(10)},
+    {k:"deploy", base:{eur:200}, diff:3, xp:120, dur:days(14)},
+    {k:"month_invest", base:{eur:500, days:30}, diff:3, xp:200, bonus:{t:"Plan auto (DCA/ETF/PEA/LT) — éducatif",diff:3}, dur:days(30)},
+  ],
+};
+
+/*** BUILD STAGE ***/
+function buildStage(catId, level, intensity=1.0){
+  const s=BASE_STAGES[catId][level];
+  const diff=s.diff || (level<2?1:level<4?2:3);
+  const xp=s.xp || XP_PER_DIFFICULTY[diff];
+  const dur=s.dur || days(3);
+  const scale=clamp(intensity,1.0,2.0);
+
+  const T=(k,obj)=>{
+    switch(k){
+      /* Sport */
+      case "cardio": { const m=round5((obj.min||10)*scale); return {title:`Cardio ${m} min (FC modérée)`, diff, xp, dur}; }
+      case "force": { const r=Math.max(12,Math.round((obj.reps||15)*scale)); const core=Math.max(20,Math.round((obj.core||30)*scale)); return {title:`Circuit force 3×${r} + gainage ${core}″`, diff, xp, dur}; }
+      case "mix": { const m=round5((obj.min||45)*scale); return {title:`Mix cardio+force ${m} min`, diff, xp, dur}; }
+      case "session": { const m=round5((obj.min||60)*scale); const run=round5((obj.alt?.runKm||5)*scale); const bike=round5((obj.alt?.bikeKm||10)*scale); return {title:`Séance ${m} min (ou ${run} km run / ${bike} km vélo)`, diff, xp, dur}; }
+      case "weekly_sessions": { const s=Math.max(5,Math.round((obj.sessions||5)*scale)); return {title:`Semaine active: ${s} séances`, diff, xp, dur}; }
+      case "pb_or_volume": { const pu=round10((obj.pushups||100)*scale); return {title:`Défi perf: PB 5 km OU ${pu} pompes cumulées`, diff, xp, dur}; }
+      case "steps_streak": { const st=round10((obj.steps||10000)*scale); return {title:`${obj.days||14} jours à ≥ ${st} pas/jour`, diff, xp, dur}; }
+      case "distance_day": { const r=round5((obj.runKm||10)*scale), h=round5((obj.hikeKm||20)*scale); return {title:`Journée distance: ${r} km run OU ${h} km rando/vélo`, diff, xp, dur}; }
+      case "hero_month": { const s=Math.max(20,Math.round((obj.sessions||20)*scale)); return {title:`Mois héroïque: ${s} séances sur ${obj.days||30} jours`, diff, xp, dur}; }
+
+      /* Work */
+      case "deep": { const m=round5((obj.min||15)*scale); return {title:`Deep work ${m} min (tél. hors de vue)`, diff, xp, dur}; }
+      case "pomodoro": { const b=Math.max(1,Math.round((obj.blocks||1)*scale)); return {title:`${b} Pomodoro(s) 25 min (livrer 1 micro-output)`, diff, xp, dur}; }
+      case "double_pomo": { const b=Math.max(2,Math.round((obj.blocks||2)*scale)); return {title:`${b}×25 min + récap ${obj.recap||5} min`, diff, xp, dur}; }
+      case "delivery": return {title:`Livraison notable (feature / doc 2p / rendu visible)`, diff, xp, dur};
+      case "deep_week": { const m=round5((obj.minPerDay||120)*scale); return {title:`Semaine: ${obj.days||5} j à ${m} min de deep/j`, diff, xp, dur}; }
+      case "publish": return {title:`Publier 1 ${obj.kind||"article"} (public)`, diff, xp, dur};
+      case "daily_output": return {title:`Série ${obj.days||10} j: 1 petit output/j`, diff, xp, dur};
+      case "pitch": return {title:`Pitch/démo à ${Math.max(3,Math.round((obj.people||3)*scale))} personnes`, diff, xp, dur};
+      case "mvp_or_doc": return {title:`Lancer un MVP simple OU dossier ${(obj.pages||5)} pages`, diff, xp, dur};
+
+      /* Réflexion */
+      case "read": { const m=round5((obj.min||10)*scale); const extras=obj.sheet?" + 1 fiche (5 bullets)":obj.notes?` + ${obj.notes} idées`:obj.summarize?` + résumer 1 ${obj.summarize}`:""; return {title:`Lire ${m} min${extras}`, diff, xp, dur}; }
+      case "study": return {title:`Étude ${(obj.min||60)} min + synthèse ${(obj.synth||200)} mots`, diff, xp, dur};
+      case "finish_book": return {title:`Finir 1 livre/cours + mindmap`, diff, xp, dur};
+      case "daily_study": return {title:`${obj.days||7} j: ${(obj.min||60)} min étude/lecture / j`, diff, xp, dur};
+      case "essay": { const wLow=Math.round((obj.words?.[0]||800)*scale), wHigh=Math.round((obj.words?.[1]||1200)*scale); return {title:`Rédiger ${wLow}–${wHigh} mots (essai/synthèse)`, diff, xp, dur}; }
+      case "publish_summary": return {title:`Publier une synthèse de livre`, diff, xp, dur};
+      case "teach": return {title:`Enseigner ${Math.round((obj.min||30)*scale)} min à quelqu’un`, diff, xp, dur};
+      case "thirty_day_cycle": { const pub=Math.max(10,Math.round((obj.publish||10)*scale)); return {title:`Cycle ${obj.days||30} j: ${(obj.min||30)} min/j + ${pub} résumés publiés`, diff, xp, dur}; }
+
+      /* Santé */
+      case "water_mob": return {title:`Boire ${Math.round((obj.L||1)*scale)} L + mobilité ${Math.round((obj.mobMin||5)*scale)} min`, diff, xp, dur};
+      case "screen_off": return {title:`Soirée clean: pas d’écran ${Math.round((obj.beforeSleepMin||30)*scale)} min`, diff, xp, dur};
+      case "steps": return {title:`${Math.round((obj.steps||8000)*scale/100)*100} pas aujourd’hui`, diff, xp, dur};
+      case "plate_stretch": return {title:`Assiette ${obj.plate||"50/25/25"} + ${Math.round((obj.stretch||10)*scale)} min stretch`, diff, xp, dur};
+      case "morning_routine": return {title:`Routine matinale ${obj.days||5} jours`, diff, xp, dur};
+      case "sleep_week": return {title:`${obj.nights||7} nuits: ≥${obj.hours||7}h`, diff, xp, dur};
+      case "hydr_mob_series": return {title:`${obj.days||14} j: ${obj.L||2} L/j + ${obj.mobMin||10} min/j`, diff, xp, dur};
+      case "home_meals": return {title:`Semaine: ${obj.weekMeals||5} repas maison + 0 ultra-transformés`, diff, xp, dur};
+      case "fitness_test": return {title:`Test: planche ${obj.plankMin||3} min OU 5 km run`, diff, xp, dur};
+      case "three_pillars_month": return {title:`Mois “3 piliers”: ${obj.days||20}/30 j`, diff, xp, dur};
+
+      /* Social */
+      case "msg": return {title:`Envoyer ${Math.max(1,Math.round((obj.count||1)*scale))} message(s) (vrai check-in)`, diff, xp, dur};
+      case "call": return {title:`1 appel ${Math.round((obj.min||10)*scale)} min (sans multitâche)`, diff, xp, dur};
+      case "invite": return {title:`Proposer 1 ${obj.kind||"café"}`, diff, xp, dur};
+      case "event_join": return {title:`Rejoindre 1 événement/club/meetup`, diff, xp, dur};
+      case "host_two": return {title:`Inviter ${Math.max(2,Math.round((obj.count||2)*scale))} personnes`, diff, xp, dur};
+      case "daily_touch": return {title:`${obj.days||7} j: 1 interaction intentionnelle / j`, diff, xp, dur};
+      case "cowork_host": return {title:`Organiser 1 co-work (≥${Math.max(4,Math.round((obj.people||4)*scale))} pers.)`, diff, xp, dur};
+      case "three_events": return {title:`${obj.events||3} événements en ${obj.spanDays||14} j`, diff, xp, dur};
+      case "volunteer": return {title:`Bénévolat: ${obj.hours||2} h d’aide réelle`, diff, xp, dur};
+      case "host_event": return {title:`Organiser un dîner/événement (≥${Math.max(6,Math.round((obj.people||6)*scale))} pers.)`, diff, xp, dur};
+
+      /* Finances */
+      case "save": { const eur=round10((obj.eur||20)*scale); return {title:`Épargner ${fmtEuro(eur)}`, diff, xp, dur}; }
+      case "no_spend_week": return {title:`Semaine sans ${obj.scope||"livraison/resto"}`, diff, xp, dur};
+      case "budget_plan": return {title:`Plan budget ${obj.days||30} j & tenir ≥${obj.adherence||80}%`, diff, xp, dur};
+      case "side_income": { const eur=round50((obj.eur||100)*scale); return {title:`Revenu annexe: gagner ${fmtEuro(eur)}`, diff, xp, dur}; }
+      case "save_month": { const eur=round50((obj.eur||1000)*scale); return {title:`Mois épargne ${fmtEuro(eur)} (${BASE_STAGES.finances[9].base.days} j)`, diff, xp, dur}; }
+
+      /* Investissement */
+      case "learn_inv": { const m=round5((obj.min||20)*scale); return {title:`Étude ${m} min (thème: ${obj.topics||"DCA & risque"}) + 3 notes`, diff, xp, dur}; }
+      case "watchlist": { const a=Math.max(5,Math.round((obj.assets||5)*scale)); return {title:`Créer une watchlist de ${a} actifs + critères (1 phrase)`, diff, xp, dur}; }
+      case "dca": { const eur=round50((obj.eur||50)*scale); return {title:`Mettre en place un DCA ${fmtEuro(eur)} (réel ou simulation)`, diff, xp, dur}; }
+      case "paper": { const t=Math.max(3,Math.round((obj.trades||3)*scale)); return {title:`Paper trading: ${t} ordres simulés (raison, risque, stop)`, diff, xp, dur}; }
+      case "journal_week": { return {title:`Journal d’investissement: ${obj.days||7} jours (1 note/jour)`, diff, xp, dur}; }
+      case "report": { return {title:`Lire ${obj.docs||1} rapport annuel / lettre de fonds + 5 bullets`, diff, xp, dur}; }
+      case "backtest": { const y=Math.max(3,Math.round((obj.years||3)*scale)); return {title:`Backtest simple sur ${y} ans (règle: DCA + rebal 1/an)`, diff, xp, dur}; }
+      case "rebalance": { const p=Math.max(2,Math.round((obj.allocPairs||2)*scale)); return {title:`Définir allocation cible (ex. 70/30) + simuler rebal sur ${p} paires`, diff, xp, dur}; }
+      case "deploy": { const eur=round50((obj.eur||200)*scale); return {title:`Déployer ${fmtEuro(eur)} selon l’allocation (réel/simu)`, diff, xp, dur}; }
+      case "month_invest": { const eur=round50((obj.eur||500)*scale); return {title:`Mois d’investissement: ${fmtEuro(eur)} en ${BASE_STAGES.invest[9].base.days} j (DCA hebdo)`, diff, xp, dur}; }
+    }
+  };
+
+  const core=T(s.k,s.base||{});
+  const bonus=s.bonus?{title:s.bonus.t, diff:s.bonus.diff}:null;
+  return {...core, bonus};
+}
+
+/*** APP ***/
+function App(){
+  const loaded=loadState();
+  const [activeCat,setActiveCat]=useState(CATEGORIES[0].id);
+  const [activeTab,setActiveTab]=useState("quests");
+
+  const [quests,setQuests]=useState(()=>loaded?.quests||[]);
+  const [progress,setProgress]=useState(()=>loaded?.progress||{});
+  const [ownedCards,setOwnedCards]=useState(()=>loaded?.ownedCards||[]);
+  const [customCards,setCustomCards]=useState(()=>loaded?.customCards||null);
+  const [customImages,setCustomImages]=useState(()=>loaded?.customImages||{});
+  const [qlProgress,setQlProgress]=useState(()=>loaded?.qlProgress||{});
+  const [onboardingDone,setOnboardingDone]=useState(()=>loaded?.onboardingDone||false);
+  const [showOnboard,setShowOnboard]=useState(()=>!loaded?.onboardingDone);
+
+  // UI
+  const [title,setTitle]=useState(""); const [difficulty,setDifficulty]=useState(2); const [repeatable,setRepeatable]=useState(true);
+  const [saveStatus,setSaveStatus]=useState(""); const [copied,setCopied]=useState(false);
+  const [showDeckImp,setShowDeckImp]=useState(false); const [showDeckExp,setShowDeckExp]=useState(false);
+  const [importDeckText,setImportDeckText]=useState(""); const [importDeckError,setImportDeckError]=useState("");
+  const fileRestoreRef=useRef(null);
+
+  useEffect(()=>{
+    setSaveStatus("saving");
+    saveState({quests,progress,ownedCards,customCards,customImages,qlProgress,onboardingDone});
+    const t1=setTimeout(()=>setSaveStatus("saved"),150);
+    const t2=setTimeout(()=>setSaveStatus(""),1400);
+    return ()=>{clearTimeout(t1);clearTimeout(t2);};
+  },[quests,progress,ownedCards,customCards,customImages,qlProgress,onboardingDone]);
+
+  const cardsMaster=useMemo(()=>customCards?.length?customCards:CARDS_MASTER_DEFAULT,[customCards]);
+  const totalXP=useMemo(()=>Object.values(progress).reduce((s,v)=>s+(v?.xp||0),0),[progress]);
+  const unlockedCountTarget=useMemo(()=>Math.min(cardsMaster.length,Math.floor(totalXP/CARD_UNLOCK_XP_STEP)),[totalXP,cardsMaster.length]);
+
+  useEffect(()=>{
+    if(ownedCards.length>=unlockedCountTarget) return;
+    const to=unlockedCountTarget-ownedCards.length, start=ownedCards.length, add=[];
+    for(let i=0;i<to;i++){ const idx=start+i, base=cardsMaster[idx]; if(!base) break;
+      add.push({id:`card-${idx}`,index:idx,title:base.title,rarity:base.rarity,image:customImages[idx]||base.image||null,unlockedAt:Date.now()});
+    }
+    if(add.length) setOwnedCards(p=>[...p,...add]);
+  },[unlockedCountTarget,ownedCards.length,cardsMaster,customImages]);
+
+  const visibleQuests=useMemo(()=>quests.filter(q=>q.category===activeCat),[quests,activeCat]);
+  const addXP=(cat,val)=>setProgress(prev=>{const cur=prev[cat]?.xp||0;return {...prev,[cat]:{xp:cur+val}}});
+  const getQuestXP=q=> q?.xpOverride || XP_PER_DIFFICULTY[q?.difficulty||2];
+
+  // MJ helpers
+  const defaultQl=(cat)=>({index:0,started:false,intensity:1.0,streak:0,hardcore:false,deadlineDaysDefault:3,activeQuestId:null,lastCreatedAt:null});
+  const stateFor=(cat)=>qlProgress[cat]||defaultQl(cat);
+  const updateQl=(cat,patch)=>setQlProgress(prev=>({...prev,[cat]:{...stateFor(cat),...patch}}));
+
+  const ensureActiveQuestFor=(cat)=>{
+    const st=stateFor(cat); if(!st.started) return;
+    const idx=st.index; const base=BASE_STAGES[cat]; if(idx>=base.length) return;
+    const built=buildStage(cat,idx,st.intensity);
+    const title=`[MJ] ${CATEGORIES.find(c=>c.id===cat)?.label} — Étape ${idx+1}/${base.length}: ${built.title}`;
+    const existing=st.activeQuestId? quests.find(q=>q.id===st.activeQuestId):null;
+    const dueAt=Date.now()+ (built.dur || days(st.deadlineDaysDefault||3));
+    if(existing && !existing.archive){
+      if(existing.title!==title || existing.difficulty!==(built.diff||2) || existing.xpOverride!== (built.xp||null)){
+        setQuests(prev=>prev.map(q=>q.id===existing.id?{...q,title,difficulty:built.diff||2,xpOverride:built.xp||null,dueAt:q.dueAt||dueAt}:q));
+      }
+      return;
+    }
+    const q={id:Math.random().toString(36).slice(2),title,category:cat,difficulty:built.diff||2,xpOverride:built.xp||null,repeatable:false,createdAt:Date.now(),dueAt,archive:false,mj:true,mjStageIndex:idx};
+    setQuests(prev=>[q,...prev]);
+    updateQl(cat,{activeQuestId:q.id,lastCreatedAt:q.createdAt});
+  };
+  useEffect(()=>{ ensureActiveQuestFor(activeCat); },[activeCat, qlProgress[activeCat]?.index, qlProgress[activeCat]?.started, qlProgress[activeCat]?.intensity]);
+
+  const startQuestline=()=>{ updateQl(activeCat,{index:0,started:true,activeQuestId:null}); setTimeout(()=>ensureActiveQuestFor(activeCat),0); };
+  const resetQuestline=()=>{ if(!confirm("Recommencer depuis L1 ?"))return; updateQl(activeCat,{index:0,started:true,activeQuestId:null,streak:0}); setTimeout(()=>ensureActiveQuestFor(activeCat),0); };
+
+  const adaptAfter=(cat,completedQuest,stageBuilt)=>{
+    const st=stateFor(cat);
+    const now=Date.now(); const created=st.lastCreatedAt||completedQuest?.createdAt||now;
+    const ttl=stageBuilt.dur||days(st.deadlineDaysDefault||3);
+    const elapsed=now-created; const ratio=elapsed/ttl;
+    let newIntensity=st.intensity, newStreak=st.streak;
+    if(ratio<=0.5){ newIntensity+=0.15; newStreak+=1; }
+    else if(ratio>1.05){ newIntensity-=0.10; newStreak=0; }
+    if(st.hardcore && ratio>1.15){ const back=Math.max(0,(st.index||0)-1); updateQl(cat,{index:back}); }
+    newIntensity=clamp(newIntensity,1.0,2.0);
+    updateQl(cat,{intensity:newIntensity,streak:newStreak,lastCreatedAt:null});
+  };
+
+  const completeMjActiveQuest=(q)=>{
+    const cat=q.category; const st=stateFor(cat); const idx=st.index;
+    const built=buildStage(cat,idx,st.intensity);
+    addXP(cat, built.xp||XP_PER_DIFFICULTY[built.diff||2]);
+    setQuests(prev=>prev.map(x=>x.id===q.id?{...x,archive:true}:x));
+    if(built.bonus){
+      const bq={id:Math.random().toString(36).slice(2),title:`Bonus — ${built.bonus.title}`,category:cat,difficulty:built.bonus.diff||2,repeatable:false,createdAt:Date.now(),archive:false};
+      setQuests(prev=>[bq,...prev]);
+    }
+    adaptAfter(cat,q,built);
+    updateQl(cat,{index:idx+1,activeQuestId:null});
+    setTimeout(()=>ensureActiveQuestFor(cat),0);
+  };
+
+  const completeQuest=(q)=>{
+    if(q.mj) return completeMjActiveQuest(q);
+    addXP(q.category, getQuestXP(q));
+    if(!q.repeatable) setQuests(prev=>prev.map(x=>x.id===q.id?{...x,archive:true}:x));
+  };
+  const removeQuest=(id)=>setQuests(prev=>prev.filter(q=>q.id!==id));
+  const addQuest=()=>{ const clean=title.trim(); if(!clean) return;
+    const q={id:Math.random().toString(36).slice(2),title:clean,category:activeCat,difficulty:Number(difficulty),repeatable:Boolean(repeatable),createdAt:Date.now(),archive:false};
+    setQuests(prev=>[q,...prev]); setTitle(""); setDifficulty(2); setRepeatable(true);
+  };
+
+  // Export/Import all
+  const exportAll=()=>{
+    const data={version:"6",timestamp:Date.now(),quests,progress,ownedCards,customCards,customImages,qlProgress,onboardingDone};
+    const blob=new Blob([JSON.stringify(data)],{type:"application/json"}); const url=URL.createObjectURL(blob);
+    const a=document.createElement("a"); a.href=url; a.download=`life_rpg_backup_${new Date().toISOString().slice(0,10)}.json`;
+    document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+  };
+  const importAllFromFile=(file)=>{
+    const reader=new FileReader();
+    reader.onload=()=>{ try{
+      const data=JSON.parse(reader.result);
+      setQuests(Array.isArray(data.quests)?data.quests:[]);
+      setProgress(typeof data.progress==="object"&&data.progress?data.progress:{});
+      setOwnedCards(Array.isArray(data.ownedCards)?data.ownedCards:[]);
+      setCustomCards(Array.isArray(data.customCards)?data.customCards:null);
+      setCustomImages(typeof data.customImages==="object"&&data.customImages?data.customImages:{});
+      setQlProgress(typeof data.qlProgress==="object"&&data.qlProgress?data.qlProgress:{});
+      setOnboardingDone(Boolean(data.onboardingDone));
+      alert("Restauration terminée !");
+    }catch(e){ alert("Échec de la restauration : "+(e.message||"format inconnu")); } };
+    reader.readAsText(file);
+  };
+
+  // Deck import/export
+  const sanitizeCards=(arr)=>{ const ALLOWED=new Set(["Common","Rare","Epic","Legendary"]);
+    const cleaned=arr.map((c,i)=>({title:String(c.title||`Card ${i+1}`).slice(0,80),rarity:ALLOWED.has(c.rarity)?c.rarity:"Common",image:c.image?String(c.image):null,category:c.category||"sport"})).slice(0,70);
+    if(!cleaned.length) throw new Error("Aucune carte valide trouvée"); return cleaned;
+  };
+  const parseCards=(text)=>{
+    try{const parsed=JSON.parse(text); if(Array.isArray(parsed)) return sanitizeCards(parsed);}catch{}
+    const lines=text.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+    return sanitizeCards(lines.map(line=>{const p=line.split(/\s*[;|]\s*/); return {title:p[0],rarity:p[1]||"Common",image:p[2]||null,category:p[3]||null};}));
+  };
+  const handleDeckImport=()=>{ setImportDeckError(""); try{const next=parseCards(importDeckText); setCustomCards(next); setOwnedCards([]); setShowDeckImp(false); setImportDeckText(""); alert(`Import réussi: ${next.length} cartes.`);}catch(e){ setImportDeckError(e.message||"Échec de l'import"); } };
+  const copyDeckExport=()=>navigator.clipboard.writeText(JSON.stringify(cardsMaster,null,2)).then(()=>setCopied(true)).catch(()=>setCopied(false));
+
+  /*** ONBOARDING / CALIBRATION ***/
+  const defaultAnswers=useMemo(()=>{
+    const base={}; for(const c of CATEGORIES){ base[c.id]={level:3, metric:0, startNow:true}; } return base;
+  },[]);
+  const [answers,setAnswers]=useState(defaultAnswers);
+  const metricLabel=(catId)=>{
+    switch(catId){
+      case "sport": return "Séances/semaine (0–7)";
+      case "work": return "Deep work (min/jour)";
+      case "reflexion": return "Lecture/étude (min/jour)";
+      case "sante": return "Sommeil (h/nuit)";
+      case "social": return "Interactions intentionnelles/semaine";
+      case "finances": return "Épargne possible ce mois (€)";
+      case "invest": return "Montant investi possible / mois (€)";
+      default: return "Niveau";
+    }
+  };
+  const computeStart=(catId, ans)=>{
+    let index = clamp(Math.round((ans.level||3))-1,0,4);
+    let intensity = clamp(1.0 + 0.2*((ans.level||3)-1),1.0,2.0);
+    const m = Number(ans.metric||0);
+
+    switch(catId){
+      case "sport": if(m>=3) index+=1; if(m>=5) index+=1; break;
+      case "work": if(m>=60) index+=1; if(m>=120) index+=1; break;
+      case "reflexion": if(m>=30) index+=1; if(m>=60) index+=1; break;
+      case "sante": if(m>=7) index+=1; break;
+      case "social": if(m>=7) index+=1; if(m>=14) index+=1; break;
+      case "finances":
+        if(m>=200) index+=1; if(m>=500) index+=2; if(m>=1000) index+=3;
+        intensity = clamp(1.0 + Math.min(m/1000,1)*0.6 + 0.1*((ans.level||3)-3), 1.0, 2.0);
+        break;
+      case "invest":
+        if(m>=100) index+=1; if(m>=300) index+=2; if(m>=500) index+=3;
+        intensity = clamp(1.0 + Math.min(m/1000,1)*0.6 + 0.1*((ans.level||3)-3), 1.0, 2.0);
+        break;
+    }
+    index = clamp(index,0,BASE_STAGES[catId].length-1);
+    return {index, intensity};
+  };
+  const applyCalibration=(autoStart=true)=>{
+    let nextQl={...qlProgress};
+    for(const c of CATEGORIES){
+      const ans=answers[c.id]; const {index,intensity}=computeStart(c.id, ans||{});
+      nextQl[c.id] = { ...(qlProgress[c.id]||{}), index, intensity, started: !!autoStart && !!ans?.startNow, activeQuestId:null, streak:0, hardcore:false, deadlineDaysDefault:3 };
+    }
+    setQlProgress(nextQl); setOnboardingDone(true); setShowOnboard(false);
+    setTimeout(()=>{ for(const c of CATEGORIES){ if(nextQl[c.id]?.started) ensureActiveQuestFor(c.id); } },0);
+  };
+
+  /*** RESET BUTTONS ***/
+  const resetProgress = () => {
+    if (!confirm("Réinitialiser la PROGRESSION ? (XP, quêtes, cartes débloquées, lignes MJ)\nLes cartes/Images importées seront CONSERVÉES.")) return;
+    setQuests([]);
+    setProgress({});
+    setOwnedCards([]);
+    setQlProgress({});
+    setOnboardingDone(false);
+    setShowOnboard(true); // relance le questionnaire
+  };
+
+  const resetEverything = () => {
+    if (!confirm("⚠️ Réinitialiser TOUT (deck personnalisé + images importées INCLUS) ?")) return;
+    try { localStorage.removeItem(STORAGE_KEY); } catch {}
+    setQuests([]);
+    setProgress({});
+    setOwnedCards([]);
+    setCustomCards(null);   // efface deck personnalisé
+    setCustomImages({});    // efface images importées
+    setQlProgress({});
+    setOnboardingDone(false);
+    setShowOnboard(true);
+  };
+
+  /*** UI: Carte TCG ***/
+  const TcgCard=({card,idx,owned,unlockedAt,onUpload})=>{
+    const imgSrc=customImages[idx]||card.image; const isLegendary=card.rarity==="Legendary";
+    const cat=CATEGORIES.find(c=>c.id===card.category)?.label||card.category;
+    return (
+      <div className="relative transition hover:-translate-y-0.5" style={{width:"100%",aspectRatio:"63/88"}}>
+        <div className={`absolute inset-0 rounded-[18px] p-[1.5px] bg-gradient-to-br ${rarityFrame(card.rarity)} shadow-xl`}>
+          <div className={`relative flex h-full w-full flex-col rounded-[16px] ${rarityInner(card.rarity)} border border-white/60 overflow-hidden glass ${isLegendary?"foil":""}`}>
+            <div className="flex items-center justify-between px-2.5 py-1.5">
+              <span className={`text-[11px] px-2 py-0.5 rounded-full ${rarityPill(card.rarity)}`}>{card.rarity}</span>
+              <span className="text-[11px] text-slate-700">{cat}</span>
+              <span className="text-[11px] text-slate-500">#{String(idx+1).padStart(2,"0")}</span>
+            </div>
+            <div className="mx-2 mb-2 flex-1 overflow-hidden rounded-[12px] border border-slate-200/60 bg-gradient-to-br from-white to-slate-50">
+              {imgSrc? <img src={imgSrc} alt={card.title} className="w-full h-full object-cover"/> :
+                <div className="h-full w-full flex items-center justify-center">
+                  <div className="text-4xl opacity-70 select-none">🎴</div>
+                </div>}
+            </div>
+            <div className="px-2.5 pb-2">
+              {/* Titre sombre sur fond clair (carte) */}
+              <div className="text-[13px] font-semibold tracking-tight text-slate-900 truncate">{card.title}</div>
+              {owned?<div className="text-[10px] text-slate-600">Débloquée le {new Date(unlockedAt).toLocaleString()}</div>:<div className="text-[10px] text-slate-600">🔒 Verrouillée</div>}
+            </div>
+            {!imgSrc&&idx===0&&(
+              <div className="absolute bottom-2 right-2">
+                <label className="inline-flex items-center gap-1 text-[10px] cursor-pointer px-2 py-1 rounded-lg border border-slate-300 bg-white/90">
+                  <input type="file" accept="image/*" className="hidden" onChange={onUpload}/> Ajouter l'image
+                </label>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // Derived for render
+  const st=stateFor(activeCat);
+  const baseArr=BASE_STAGES[activeCat];
+  const qlStarted=!!st.started, qlIndex=st.index||0, qlDone=qlIndex>=baseArr.length;
+  const currentStage = qlDone? null : buildStage(activeCat, qlIndex, st.intensity);
+
+  return (
+    <div className="min-h-screen">
+      <header className="sticky top-0 z-20 backdrop-blur glass border">
+        <div className="max-w-6xl mx-auto px-4 py-3 flex items-center gap-3">
+          <div className="w-9 h-9 rounded-2xl btn-grad flex items-center justify-center text-xl shadow">★</div>
+          <h1 className="text-xl font-semibold tracking-tight">Life RPG — Maître du Jeu</h1>
+          <div className="ml-2 text-xs">
+            {saveStatus==="saving"&&<span className="px-2 py-1 rounded-lg bg-white/60 border border-white/60">Sauvegarde…</span>}
+            {saveStatus==="saved"&&<span className="px-2 py-1 rounded-lg bg-emerald-400/30 border border-emerald-300/50">✓ Sauvegardé</span>}
+          </div>
+          <div className="ml-auto flex gap-2 items-center">
+            <button onClick={()=>setActiveTab("quests")} className={`px-3 py-1.5 text-sm rounded-xl border glass ${activeTab==="quests"?"btn-grad border-transparent text-white":"border-white/50 hover:bg白/10".replace("白","white")}`}>Quêtes</button>
+            <button onClick={()=>setActiveTab("cards")} className={`px-3 py-1.5 text-sm rounded-xl border glass ${activeTab==="cards"?"btn-grad border-transparent text-white":"border-white/50 hover:bg-white/10"}`}>Cartes ({ownedCards.length}/{cardsMaster.length})</button>
+            <button onClick={exportAll} className="px-3 py-1.5 text-sm rounded-xl border glass border-white/50 hover:bg-white/10">Sauvegarder</button>
+            <input ref={fileRestoreRef} type="file" accept="application/json" className="hidden" onChange={e=>{const f=e.target.files?.[0]; if(f) importAllFromFile(f); e.target.value="";}}/>
+            <button onClick={()=>fileRestoreRef.current?.click()} className="px-3 py-1.5 text-sm rounded-xl border glass border-white/50 hover:bg-white/10">Restaurer</button>
+            <button onClick={()=>setShowDeckImp(true)} className="px-3 py-1.5 text-sm rounded-xl border glass border-white/50 hover:bg-white/10">Importer deck</button>
+            <button onClick={()=>{setCopied(false);setShowDeckExp(true);}} className="px-3 py-1.5 text-sm rounded-xl border glass border-white/50 hover:bg-white/10">{copied?"Export (copié ✓)":"Exporter deck"}</button>
+
+            {/* Boutons RESET */}
+            <button onClick={resetProgress} className="px-3 py-1.5 text-sm rounded-xl border glass border-white/50 hover:bg-white/10" title="Réinitialise quêtes, XP, cartes débloquées, lignes MJ (conserve deck & images)">
+              Reset progression
+            </button>
+            <button onClick={resetEverything} className="px-3 py-1.5 text-sm rounded-xl border glass border-white/50 hover:bg-white/10" title="Efface TOUT : deck personnalisé + images inclus">
+              Reset TOUT
+            </button>
+          </div>
+        </div>
+      </header>
+
+      {activeTab==="quests"? (
+        <main className="max-w-6xl mx-auto px-4 py-6 grid lg:grid-cols-3 gap-6">
+          {/* LEFT */}
+          <section className="lg:col-span-1 space-y-4">
+            <div className="p-4 rounded-2xl glass border">
+              <h2 className="text-sm font-semibold mb-3">Catégories</h2>
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                {CATEGORIES.map(c=>(
+                  <button key={c.id} onClick={()=>setActiveCat(c.id)} className={`group rounded-2xl border p-3 text-left transition glass ${activeCat===c.id?"border-transparent btn-grad text-white shadow":"border-white/40 hover:bg-white/10"}`}>
+                    <div className="text-2xl mb-1">{c.icon}</div>
+                    <div className="font-semibold">{c.label}</div>
+                    <div className="text-xs opacity-80">{(progress[c.id]?.xp||0)} XP</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Réglages MJ */}
+            <div className="p-4 rounded-2xl glass border">
+              <h3 className="text-base font-semibold mb-2">Réglages MJ</h3>
+              <div className="text-sm mb-2">Intensité: <b>{(st.intensity||1).toFixed(2)}</b> • Streak: <b>{st.streak||0}</b></div>
+              <div className="flex items-center gap-2 mb-2">
+                <button onClick={()=>updateQl(activeCat,{intensity:clamp((st.intensity||1)+0.1,1,2)})} className="px-2 py-1 text-xs rounded-lg border glass border-white/50 hover:bg-white/10">+ Intensité</button>
+                <button onClick={()=>updateQl(activeCat,{intensity:clamp((st.intensity||1)-0.1,1,2)})} className="px-2 py-1 text-xs rounded-lg border glass border-white/50 hover:bg-white/10">− Intensité</button>
+                <button onClick={()=>{setAnswers(defaultAnswers); setShowOnboard(true);}} className="ml-auto px-2 py-1 text-xs rounded-lg border glass border-white/50 hover:bg-white/10">Calibration</button>
+              </div>
+              <label className="inline-flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={!!st.hardcore} onChange={e=>updateQl(activeCat,{hardcore:e.target.checked})}/> Mode Hardcore (retard ⇒ -1 niveau)
+              </label>
+              <div className="mt-2 text-xs">Délai par défaut: {st.deadlineDaysDefault||3} jours</div>
+              <div className="mt-1 flex gap-2">
+                <button onClick={()=>updateQl(activeCat,{deadlineDaysDefault:Math.max(1,(st.deadlineDaysDefault||3)-1)})} className="px-2 py-1 text-xs rounded-lg border glass border-white/50 hover:bg-white/10">−1j</button>
+                <button onClick={()=>updateQl(activeCat,{deadlineDaysDefault:(st.deadlineDaysDefault||3)+1})} className="px-2 py-1 text-xs rounded-lg border glass border-white/50 hover:bg-white/10">+1j</button>
+              </div>
+            </div>
+
+            {/* Gauge cartes */}
+            <div className="p-4 rounded-2xl glass border">
+              <h3 className="text-base font-semibold mb-2 flex items-center gap-2">{CATEGORIES.find(c=>c.id===activeCat)?.icon}{CATEGORIES.find(c=>c.id===activeCat)?.label}</h3>
+              <div className="text-sm mb-1">1 carte / 100 XP cumulés.</div>
+              <div className="w-full h-3 bg-slate-900/10 rounded-full overflow-hidden mb-2">
+                <div className="h-full btn-grad transition-all" style={{width:`${Math.round(((progress[activeCat]?.xp||0)%CARD_UNLOCK_XP_STEP)/CARD_UNLOCK_XP_STEP*100)}%`}}/>
+              </div>
+              <div className="text-xs">
+                {(()=>{const xp=progress[activeCat]?.xp||0; const next=CARD_UNLOCK_XP_STEP-(xp%CARD_UNLOCK_XP_STEP); return `${xp} XP • ${next===100?0:next} XP avant la prochaine carte`;})()}
+              </div>
+              <div className="mt-3 flex gap-2">
+                <button onClick={resetQuestline} className="text-xs px-2 py-1 rounded-lg border glass border-white/50 hover:bg-white/10">Recommencer la ligne</button>
+              </div>
+            </div>
+          </section>
+
+          {/* RIGHT */}
+          <section className="lg:col-span-2 space-y-4">
+            {/* MJ Panel */}
+            <div className="p-4 rounded-2xl glass border">
+              <div className="flex items-center gap-2 mb-2">
+                <h2 className="text-base font-semibold">Ligne évolutive — {CATEGORIES.find(c=>c.id===activeCat)?.label}</h2>
+                <span className="text-xs opacity-80">({qlIndex}/{baseArr.length} complétées)</span>
+              </div>
+              <div className="flex items-center gap-2 mb-3">
+                {baseArr.map((_,i)=>(
+                  <div key={i} className={`h-2 flex-1 rounded-full ${i<qlIndex?"bg-emerald-500/70":i===qlIndex?"bg-fuchsia-500/80":"bg-slate-900/10"}`}/>
+                ))}
+              </div>
+
+              {!qlStarted?(
+                <div className="flex items-center justify-between">
+                  <div className="text-sm">Commence la ligne évolutive de cette catégorie.</div>
+                  <button onClick={startQuestline} className="px-3 py-1.5 rounded-xl btn-grad shadow text-white">Démarrer la ligne</button>
+                </div>
+              ): qlDone?(
+                <div className="flex items-center justify-between">
+                  <div className="text-sm font-medium text-emerald-700">🎉 Ligne terminée ! Recommence si tu veux grinder.</div>
+                  <button onClick={resetQuestline} className="px-3 py-1.5 rounded-xl border glass border-white/50 hover:bg-white/10">Recommencer</button>
+                </div>
+              ):(
+                <>
+                  <div className="mb-2">
+                    <div className="text-sm uppercase tracking-wide opacity-70">Étape {qlIndex+1} / {baseArr.length}</div>
+                    <div className="text-base font-semibold">{currentStage.title}</div>
+                    <div className="text-xs mt-0.5">Récompense: +{currentStage.xp||XP_PER_DIFFICULTY[currentStage.diff||2]} XP • Délai ~ {Math.round((currentStage.dur||days(3))/86400000)} j</div>
+                    {currentStage.bonus && <div className="text-xs text-amber-700 mt-1">À la validation : Bonus — <b>{currentStage.bonus.title}</b></div>}
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={()=>{
+                      const stNow=stateFor(activeCat);
+                      const act=stNow.activeQuestId? quests.find(x=>x.id===stNow.activeQuestId):null;
+                      if(act && !act.archive) completeMjActiveQuest(act); else completeMjActiveQuest({category:activeCat,createdAt:Date.now()});
+                    }} className="px-3 py-2 rounded-xl btn-grad shadow text-white">Valider l’étape (+{currentStage.xp||XP_PER_DIFFICULTY[currentStage.diff||2]} XP)</button>
+                    <button onClick={()=>{updateQl(activeCat,{intensity:clamp((st.intensity||1)-0.1,1,2)});}} className="px-3 py-2 rounded-xl border glass border-white/50 hover:bg-white/10">Trop dur</button>
+                    <button onClick={()=>{updateQl(activeCat,{intensity:clamp((st.intensity||1)+0.1,1,2)});}} className="px-3 py-2 rounded-xl border glass border-white/50 hover:bg-white/10">Trop facile</button>
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Ajout manuel */}
+            <div className="p-4 rounded-2xl glass border">
+              <h2 className="text-base font-semibold mb-3">Ajouter une quête ({CATEGORIES.find(c=>c.id===activeCat)?.label})</h2>
+              <div className="grid sm:grid-cols-6 gap-3">
+                <input value={title} onChange={e=>setTitle(e.target.value)} placeholder="Ex: DCA 50€ / 20 min cardio / 1 doc 2p" className="sm:col-span-3 w-full px-3 py-2 rounded-xl border glass border-white/40 placeholder-slate-500"/>
+                <div className="sm:col-span-1">
+                  <label className="text-xs opacity-80">Difficulté</label>
+                  <select value={difficulty} onChange={e=>setDifficulty(Number(e.target.value))} className="w-full px-3 py-2 rounded-xl border glass border-white/40">
+                    <option value={1}>Facile (+10 XP)</option><option value={2}>Moyen (+20 XP)</option><option value={3}>Difficile (+30 XP)</option>
+                  </select>
+                </div>
+                <div className="sm:col-span-1 flex items-end">
+                  <label className="inline-flex items-center gap-2 text-sm"><input type="checkbox" checked={repeatable} onChange={e=>setRepeatable(e.target.checked)}/>Répétable</label>
+                </div>
+                <div className="sm:col-span-1 flex items-end">
+                  <button onClick={addQuest} className="w-full px-3 py-2 rounded-xl btn-grad shadow text-white">Ajouter</button>
+                </div>
+              </div>
+            </div>
+
+            {/* Liste quêtes */}
+            <div className="p-4 rounded-2xl glass border">
+              <div className="flex items-center gap-2 mb-3">
+                <h2 className="text-base font-semibold">Quêtes – {CATEGORIES.find(c=>c.id===activeCat)?.label}</h2>
+                <span className="text-xs opacity-80">({visibleQuests.filter(q=>!q.archive).length} actives, {visibleQuests.filter(q=>q.archive).length} archivées)</span>
+              </div>
+              {visibleQuests.length===0 && <div className="text-sm opacity-80">Aucune quête. Démarre la ligne MJ ou ajoute une quête ci-dessus.</div>}
+              <div className="space-y-2">
+                {visibleQuests.map(q=>{
+                  const late=q.dueAt && Date.now()>q.dueAt;
+                  return (
+                  <div key={q.id} className={`flex items-center gap-3 p-3 rounded-2xl border glass ${q.archive?"opacity-70 border-white/30":"border-white/40"} ${late?"!bg-rose-400/10 border-rose-200/50":""}`}>
+                    <div className={`text-xs px-2 py-1 rounded-lg ${q.title.startsWith("[MJ]")?"bg-fuchsia-400/25 text-slate-900":"bg-slate-900/10"}`}>
+                      {q.title.startsWith("Bonus")?"Bonus":(q.title.startsWith("[MJ]")?"MJ":`D${q.difficulty}`)}
+                    </div>
+                    <div className="flex-1">
+                      <div className="font-medium leading-tight">{q.title}</div>
+                      <div className="text-xs opacity-80 flex items-center gap-2">
+                        <span>{q.repeatable?"Répétable":"Unique"} • {new Date(q.createdAt).toLocaleDateString()}</span>
+                        {q.dueAt && <span className={`${late?"text-rose-700":"opacity-70"}`}>Échéance: {new Date(q.dueAt).toLocaleDateString()}</span>}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {!q.archive && (
+                        <button onClick={()=>completeQuest(q)} className="px-3 py-1.5 rounded-xl btn-grad shadow text-white">
+                          Terminé +{getQuestXP(q)} XP
+                        </button>
+                      )}
+                      <button onClick={()=>removeQuest(q.id)} className="px-2 py-1 rounded-xl border glass border-white/40 hover:bg-white/10">Suppr.</button>
+                    </div>
+                  </div>
+                )})}
+              </div>
+            </div>
+          </section>
+        </main>
+      ) : (
+        /* CARTES */
+        <main className="max-w-6xl mx-auto px-4 py-6 space-y-4">
+          <section className="p-4 rounded-2xl glass border">
+            <div className="flex flex-wrap items-center gap-3">
+              <h2 className="text-base font-semibold">Collection de cartes</h2>
+              <div className="text-sm">{ownedCards.length}/{cardsMaster.length} débloquées</div>
+              <div className="ml-auto text-sm">XP total: <span className="font-semibold">{totalXP}</span> • Prochaine carte à {(Math.floor(totalXP/CARD_UNLOCK_XP_STEP)+1)*CARD_UNLOCK_XP_STEP} XP</div>
+            </div>
+          </section>
+          <section className="p-4 rounded-2xl glass border">
+            <div className="grid gap-4" style={{gridTemplateColumns:'repeat(auto-fill, minmax(180px, 1fr))'}}>
+              {cardsMaster.map((c,idx)=>{ const owned=ownedCards.some(oc=>oc.index===idx); const card=ownedCards.find(oc=>oc.index===idx);
+                return (
+                  <TcgCard key={idx} card={c} idx={idx} owned={owned} unlockedAt={card?.unlockedAt} onUpload={async(e)=>{
+                    const f=e.target.files?.[0]; if(!f) return;
+                    try{ const uri=await processImageFile(f,720,1024,0.85); setCustomImages(prev=>({...prev,[idx]:uri})); }
+                    catch{ const r=new FileReader(); r.onload=()=>setCustomImages(prev=>({...prev,[idx]:r.result})); r.readAsDataURL(f); }
+                  }}/>
+              )})}
+            </div>
+          </section>
+        </main>
+      )}
+
+      {/* ONBOARDING (scrollable + actions collantes) */}
+      {showOnboard && (
+        <div className="fixed inset-0 z-30 bg-black/40 flex items-center justify-center p-4">
+          <div className="w-full max-w-3xl rounded-2xl glass border flex flex-col max-h-[90vh]">
+            {/* En-tête collant */}
+            <div className="sticky top-0 z-10 px-4 py-3 rounded-t-2xl border-b"
+                 style={{background:'rgba(255,255,255,0.85)',backdropFilter:'blur(8px)'}}>
+              <div className="flex items-center justify-between">
+                <h3 className="text-base sm:text-lg font-semibold">Questionnaire de départ</h3>
+                <button onClick={()=>setShowOnboard(false)}
+                        className="text-sm px-2 py-1 rounded-lg border glass border-white/50 hover:bg-white/10">
+                  Fermer
+                </button>
+              </div>
+            </div>
+
+            {/* Contenu scrollable */}
+            <div className="flex-1 overflow-y-auto px-4 py-3">
+              <p className="text-sm mb-3">
+                Évalue chaque catégorie pour calibrer ton <b>niveau</b> et l’<b>intensité</b>.
+                Tu peux démarrer automatiquement les lignes.
+              </p>
+
+              <div className="grid md:grid-cols-2 gap-3">
+                {CATEGORIES.map(c=>(
+                  <div key={c.id} className="p-3 rounded-xl glass border">
+                    <div className="flex items-center gap-2 mb-2">
+                      <div className="text-xl">{c.icon}</div>
+                      <div className="font-semibold">{c.label}</div>
+                    </div>
+
+                    <label className="text-xs opacity-80">Niveau (1 débutant → 5 avancé)</label>
+                    <input type="range" min="1" max="5" value={answers[c.id]?.level||3}
+                      onChange={e=>setAnswers(a=>({...a,[c.id]:{...a[c.id],level:Number(e.target.value)}}))}
+                      className="w-full"/>
+                    <div className="text-xs mb-2">Niveau: <b>{answers[c.id]?.level||3}</b></div>
+
+                    <label className="text-xs opacity-80">{metricLabel(c.id)}</label>
+                    <input type="number"
+                      className="w-full mt-1 px-3 py-2 rounded-lg border glass border-white/40"
+                      value={answers[c.id]?.metric||0}
+                      onChange={e=>setAnswers(a=>({...a,[c.id]:{...a[c.id],metric:Number(e.target.value||0)}}))}
+                      placeholder="0"/>
+
+                    <div className="mt-2">
+                      <label className="inline-flex items-center gap-2 text-sm">
+                        <input type="checkbox" checked={!!answers[c.id]?.startNow}
+                          onChange={e=>setAnswers(a=>({...a,[c.id]:{...a[c.id],startNow:e.target.checked}}))}/>
+                        Démarrer maintenant cette ligne
+                      </label>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Barre d’actions collante en bas */}
+            <div className="sticky bottom-0 z-10 px-4 py-3 rounded-b-2xl border-t"
+                 style={{background:'rgba(255,255,255,0.9)',backdropFilter:'blur(8px)'}}>
+              <div className="flex flex-wrap items-center gap-2 justify-between">
+                <div className="text-xs opacity-80">
+                  Tu pourras recalibrer via <b>Réglages MJ → Calibration</b>.
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={()=>{setAnswers(defaultAnswers);}}
+                          className="px-3 py-1.5 rounded-xl border glass border-white/50 hover:bg-white/10">
+                    Réinitialiser
+                  </button>
+                  <button onClick={()=>applyCalibration(true)}
+                          className="px-3 py-1.5 rounded-xl btn-grad shadow text-white">
+                    Valider & Démarrer
+                  </button>
+                  <button onClick={()=>{setOnboardingDone(true); setShowOnboard(false);}}
+                          className="px-3 py-1.5 rounded-xl border glass border-white/50 hover:bg-white/10">
+                    Plus tard
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Deck Modals */}
+      {showDeckImp&&(
+        <div className="fixed inset-0 z-30 bg-black/40 flex items-center justify-center p-4">
+          <div className="w-full max-w-2xl rounded-2xl glass border p-4">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-base font-semibold">Importer des cartes (max 70)</h3>
+              <button onClick={()=>setShowDeckImp(false)} className="text-sm px-2 py-1 rounded-lg border glass border-white/50 hover:bg-white/10">Fermer</button>
+            </div>
+            <div className="text-sm mb-2">Formats: JSON <code>[{"{"}"title":"...","rarity":"...","image":"...","category":"..."{"}"}]</code> ou lignes <code>Titre | Rareté | ImageURL | Catégorie</code>.</div>
+            <textarea value={importDeckText} onChange={e=>setImportDeckText(e.target.value)} className="w-full h-48 p-3 rounded-2xl border glass border-white/40 font-mono text-sm" placeholder={"Ex:\nInvest — Novice 1 | Common | https://... | invest"}></textarea>
+            {importDeckError && <div className="mt-2 text-sm text-rose-700">{importDeckError}</div>}
+            <div className="mt-3 flex gap-2 justify-end">
+              <button onClick={()=>{setImportDeckText("");setImportDeckError("");}} className="px-3 py-1.5 rounded-xl border glass border-white/50 hover:bg-white/10">Effacer</button>
+              <button onClick={handleDeckImport} className="px-3 py-1.5 rounded-xl btn-grad shadow text-white">Importer</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {showDeckExp&&(
+        <div className="fixed inset-0 z-30 bg-black/40 flex items-center justify-center p-4">
+          <div className="w-full max-w-2xl rounded-2xl glass border p-4">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-base font-semibold">Exporter les cartes</h3>
+              <button onClick={()=>setShowDeckExp(false)} className="text-sm px-2 py-1 rounded-lg border glass border-white/50 hover:bg-white/10">Fermer</button>
+            </div>
+            <div className="text-sm mb-2">Copie ton deck JSON pour le réimporter plus tard.</div>
+            <textarea readOnly value={JSON.stringify(cardsMaster,null,2)} className="w-full h-64 p-3 rounded-2xl border glass border-white/40 font-mono text-sm"></textarea>
+            <div className="mt-3 flex gap-2 justify-end">
+              <button onClick={copyDeckExport} className="px-3 py-1.5 rounded-xl border glass border-white/50 hover:bg-white/10">{copied?"Copié ✓":"Copier"}</button>
+              <button onClick={()=>setShowDeckExp(false)} className="px-3 py-1.5 rounded-xl border glass border-white/50 hover:bg-white/10">OK</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <footer className="max-w-6xl mx-auto px-4 pb-10 text-center text-xs opacity-80">
+        Neon Aurora • Texte noir • Reset inclus • MJ adaptatif • Investissement • 70 cartes • Autosave • Backup/Restore
+      </footer>
+    </div>
+  );
+}
+
+const root=ReactDOM.createRoot(document.getElementById("root"));
+root.render(<App/>);
+</script>
+</body>
+</html>
